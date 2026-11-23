@@ -1,0 +1,26 @@
+# Never commit TAK certificates or keys
+library/**/certs/*
+!library/**/certs/README.md
+*.p12
+*.pem
+*.key
+*.crt
+
+# Local test artifacts
+*.log
+.DS_Store
+
+# Generated on the device (map/lib/ is left over from PagerTAK 2.2 and older)
+library/**/map/lib/
+library/**/tiles/
+__pycache__/
+
+# Site Wi-Fi profiles (facility BSSIDs) stay on the Pager
+library/**/watch/
+
+# Web console: password hash, HTTPS key, your markers, geofences and overlays
+library/**/web/auth
+library/**/items.txt
+library/**/geofences.txt
+library/**/overlays/
+library/**/web/tls/

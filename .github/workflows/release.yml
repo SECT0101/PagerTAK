@@ -1,0 +1,25 @@
+name: release
+
+# Push a tag like v2.2 to publish a release with a ready-to-copy zip of each payload.
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Zip payloads
+        run: |
+          set -e
+          mkdir dist
+          (cd library/user/general && zip -qr "$GITHUB_WORKSPACE/dist/PagerTAK-${GITHUB_REF_NAME}.zip" PagerTAK -x '*/certs/*.pem' '*/certs/*.p12')
+          (cd library/alerts/deauth_flood_detected && zip -qr "$GITHUB_WORKSPACE/dist/PagerTAK_Deauth_Alert-${GITHUB_REF_NAME}.zip" PagerTAK_Deauth_Alert)
+          (cd library/user/remote_access && zip -qr "$GITHUB_WORKSPACE/dist/NetBird_VPN-${GITHUB_REF_NAME}.zip" NetBird_VPN)
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
