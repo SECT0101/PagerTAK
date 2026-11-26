@@ -2,7 +2,7 @@
 # Title: PagerTAK Deauth Alert
 # Description: Pushes a deauth/disassoc flood detection to TAK as a map marker and GeoChat alert
 # Author: SECT0101
-# Version: 1.0
+# Version: 1.0.1
 # Category: Alerts
 #
 # Companion to the PagerTAK user payload (library/user/general/PagerTAK).
@@ -59,12 +59,36 @@ MSG=${_ALERT_DENIAL_MESSAGE:-deauth/disassoc flood detected}
 
 # ---- dedupe ---------------------------------------------------------------
 KEY=$(printf '%s' "$SRC" | tr -cd '0-9A-Fa-f' | tr 'a-f' 'A-F'); [ -z "$KEY" ] && KEY="UNKNOWN"
-SHORT="DEAUTH ${SRC: -8}"            # last 3 octets keep the marker name short on the Pager map
+DEDUPE_KEY=$KEY
+
+# ---- PagerTAK Settings > Privacy: MACs in what goes to TAK ------------------
+# show | partial (AA:BB:CC:xx:xx:xx) | hide. The loot log keeps full detail.
+ID_MAC=$(cfg_get id_mac show); case "$ID_MAC" in show|partial|hide) ;; *) ID_MAC=show ;; esac
+tak_mac() {
+    local h=${1//[:-]/}; h=${h^^}
+    [[ $h =~ ^[0-9A-F]{12}$ ]] || { printf '%s' "$1"; return; }
+    local m="${h:0:2}:${h:2:2}:${h:4:2}:${h:6:2}:${h:8:2}:${h:10:2}"
+    case "$ID_MAC" in partial) printf '%s' "${m:0:8}:xx:xx:xx" ;; hide) printf '%s' "[MAC withheld]" ;; *) printf '%s' "$m" ;; esac
+}
+tak_text() {  # masks every MAC inside a line of text
+    case "$ID_MAC" in
+        partial) sed -E 's/([0-9A-Fa-f]{2}([:-])[0-9A-Fa-f]{2}[:-][0-9A-Fa-f]{2})[:-]([0-9A-Fa-f]{2}[:-]){2}[0-9A-Fa-f]{2}/\1\2xx\2xx\2xx/g' <<< "$1" ;;
+        hide)    sed -E 's/([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}/[MAC withheld]/g' <<< "$1" ;;
+        *)       printf '%s' "$1" ;;
+    esac
+}
+if [ "$ID_MAC" = show ]; then
+    SHORT="DEAUTH ${SRC: -8}"            # last 3 octets keep the marker name short on the Pager map
+else                                     # salted hash: same source = same marker, MAC not in the uid
+    KEY=$(printf '%s%s' "$(cfg_get id_salt "")" "$KEY" | sha256sum | cut -c1-12)
+    SHORT="DEAUTH ${KEY:0:4}"
+fi
+T_SRC=$(tak_mac "$SRC"); T_AP=$(tak_mac "$AP"); T_CLIENT=$(tak_mac "$CLIENT"); T_MSG=$(tak_text "$MSG")
 NOW=$(date +%s)
-if [ -f "$STATE/$KEY" ] && [ $((NOW - $(cat "$STATE/$KEY"))) -lt "$DEDUPE_SECONDS" ]; then
+if [ -f "$STATE/$DEDUPE_KEY" ] && [ $((NOW - $(cat "$STATE/$DEDUPE_KEY"))) -lt "$DEDUPE_SECONDS" ]; then
     exit 0
 fi
-echo "$NOW" > "$STATE/$KEY"
+echo "$NOW" > "$STATE/$DEDUPE_KEY"
 
 [ "$LOCAL_ALERT" = 1 ] && ALERT "DEAUTH FLOOD
 $MSG
@@ -97,8 +121,8 @@ fi
 T=$(iso_time "$NOW"); STALE=$(iso_time $((NOW + MARKER_STALE_MIN * 60)))
 CS=$(xml_esc "$CALLSIGN")
 REMARKS=$(xml_esc "Deauth/disassoc flood detected by $CALLSIGN at $(date '+%Y-%m-%d %H:%M:%S').
-Source: $SRC  AP/BSSID: $AP  Client: $CLIENT.
-$MSG${NOPOS:-}")
+Source: $T_SRC  AP/BSSID: $T_AP  Client: $T_CLIENT.
+$T_MSG${NOPOS:-}")
 
 EVENTS=()
 if [ "$SEND_MARKER" = 1 ] && [ -z "${NOPOS:-}" ]; then
@@ -106,7 +130,7 @@ if [ "$SEND_MARKER" = 1 ] && [ -z "${NOPOS:-}" ]; then
 fi
 if [ "$SEND_CHAT" = 1 ]; then
     MID=$(cat /proc/sys/kernel/random/uuid)
-    CHAT=$(xml_esc "ALERT: deauth flood near $CALLSIGN - src $SRC, AP $AP${NOPOS:-}")
+    CHAT=$(xml_esc "ALERT: deauth flood near $CALLSIGN - src $T_SRC, AP $T_AP${NOPOS:-}")
     EVENTS+=("<event version=\"2.0\" uid=\"GeoChat.$UID_.All Chat Rooms.$MID\" type=\"b-t-f\" how=\"h-g-i-g-o\" time=\"$T\" start=\"$T\" stale=\"$(iso_time $((NOW + 86400)))\"><point lat=\"$LAT\" lon=\"$LON\" hae=\"$HAE\" ce=\"9999999.0\" le=\"9999999.0\"/><detail><__chat parent=\"RootContactGroup\" groupOwner=\"false\" messageId=\"$MID\" chatroom=\"All Chat Rooms\" id=\"All Chat Rooms\" senderCallsign=\"$CS\"><chatgrp uid0=\"$UID_\" uid1=\"All Chat Rooms\" id=\"All Chat Rooms\"/></__chat><link uid=\"$UID_\" type=\"a-f-G-U-C\" relation=\"p-p\"/><remarks source=\"BAO.F.ATAK.$UID_\" to=\"All Chat Rooms\" time=\"$T\">$CHAT</remarks></detail></event>")
 fi
 [ ${#EVENTS[@]} -eq 0 ] && exit 0
@@ -130,7 +154,7 @@ if [ -d "$RUN/outbox" ] && [ ! -f "$RUN/stop" ] && kill -0 "$(cat "$RUN/engine.p
 fi
 
 # 2) One-shot connection. Send a position report first so the server knows who we are.
-SA="<event version=\"2.0\" uid=\"$UID_\" type=\"a-f-G-U-C\" how=\"m-g\" time=\"$T\" start=\"$T\" stale=\"$(iso_time $((NOW + 120)))\"><point lat=\"$LAT\" lon=\"$LON\" hae=\"$HAE\" ce=\"9999999.0\" le=\"9999999.0\"/><detail><contact callsign=\"$CS\" endpoint=\"*:-1:stcp\"/><takv device=\"WiFi Pineapple Pager\" platform=\"PagerTAK\" os=\"OpenWrt\" version=\"1.0\"/></detail></event>"
+SA="<event version=\"2.0\" uid=\"$UID_\" type=\"a-f-G-U-C\" how=\"m-g\" time=\"$T\" start=\"$T\" stale=\"$(iso_time $((NOW + 120)))\"><point lat=\"$LAT\" lon=\"$LON\" hae=\"$HAE\" ce=\"9999999.0\" le=\"9999999.0\"/><detail><contact callsign=\"$CS\" endpoint=\"*:-1:stcp\"/><takv device=\"WiFi Pineapple Pager\" platform=\"PagerTAK\" os=\"OpenWrt\" version=\"1.0.1\"/></detail></event>"
 PAYLOAD="$( [ -z "${NOPOS:-}" ] && printf '%s\n' "$SA"; printf '%s\n' "${EVENTS[@]}")"
 
 case "$PROTO" in

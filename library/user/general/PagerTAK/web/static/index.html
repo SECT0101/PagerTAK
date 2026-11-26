@@ -198,6 +198,14 @@
           <div class="row"><button class="btn primary">Save quick messages</button><button type="button" class="btn small" id="quick-reset">Use defaults</button></div>
           <div class="hint">Empty the list and save to go back to the defaults.</div>
         </form>
+        <form id="set-privacy" class="form card">
+          <h4>Privacy (sent to TAK)</h4>
+          <div class="hint">How Wi-Fi and Bluetooth identifiers appear in alerts, markers, chats and site-survey uploads that go to TAK. Partial keeps the vendor half of a MAC (AA:BB:CC:xx:xx:xx) and the first 2 letters of a name. Loot logs on the Pager keep full detail; drone Remote ID is never masked.</div>
+          <label>Wi-Fi network names (SSID) <select name="id_ssid"><option value="show">Show</option><option value="partial">Partial</option><option value="hide">Hide</option></select></label>
+          <label>MAC addresses / BSSIDs <select name="id_mac"><option value="show">Show</option><option value="partial">Partial</option><option value="hide">Hide</option></select></label>
+          <label>Bluetooth device names <select name="id_btname"><option value="show">Show</option><option value="partial">Partial</option><option value="hide">Hide</option></select></label>
+          <button class="btn primary">Save privacy</button>
+        </form>
         <form id="set-position" class="form card">
           <h4>Position</h4>
           <label>Manual position (lat,lon) <input name="manual_pos" placeholder="used when there is no GPS fix"></label>

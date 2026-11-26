@@ -158,19 +158,21 @@ watch_save() {
 # Watch loop (background)
 #############################################################################
 watch_alert() {  # watch_alert KIND SEVERITY ssid bssid enc channel signal ssid_hex
-    local kind=$1 sev=$2 ssid=$3 bssid=$4 enc=$5 ch=$6 sig=$7 h=$8 mac uid type cs rem chat
+    local kind=$1 sev=$2 ssid=$3 bssid=$4 enc=$5 ch=$6 sig=$7 h=$8 mac uid type cs rem chat tssid tmac
     mac=$(fmt_mac "$bssid")
+    ids_refresh
+    tssid=$(tak_ssid "$ssid"); tmac=$(tak_mac "$bssid")      # what goes to TAK (Settings > Privacy)
     best_position || { P_LAT=0; P_LON=0; }
     case "$sev" in high) type="a-h-G" ;; *) type="a-s-G" ;; esac
-    cs="$kind ${ssid:-hidden}"; cs=${cs:0:28}
-    uid="$PRODUCT_NAME-watch-$bssid"
+    cs="$kind ${tssid:-hidden}"; cs=${cs:0:28}
+    uid="$PRODUCT_NAME-watch-$(tak_idkey "$bssid")"
     rem="$kind detected by $C_CALLSIGN at $(date '+%F %T')
-SSID: ${ssid:-(hidden)}
-BSSID: $mac
+SSID: ${tssid:-(hidden)}
+BSSID: $tmac
 Security: $(enc_name "$enc")  Channel: $ch  Signal: ${sig} dBm
 Site profile: $(watch_profile)
 Marker = where $C_CALLSIGN heard it (AP is within Wi-Fi range)."
-    chat="ALERT $kind near $C_CALLSIGN: '${ssid:-hidden}' $mac $(enc_name "$enc") ch$ch ${sig}dBm"
+    chat="ALERT $kind near $C_CALLSIGN: '${tssid:-hidden}' $tmac $(enc_name "$enc") ch$ch ${sig}dBm"
     if [ "$P_LAT" != 0 ]; then
         queue_cot "$(report_marker_xml "$uid" "$type" "$cs" "$P_LAT" "$P_LON" "$rem" "<color argb=\"-65536\"/>" 3600)"
         track_seen "$uid" "$P_LAT" "$P_LON" "$cs" "$type" "" "marker"

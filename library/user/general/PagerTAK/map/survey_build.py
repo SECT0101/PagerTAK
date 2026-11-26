@@ -57,11 +57,33 @@ def fmt_mac(b):
     return ":".join(b[i:i + 2] for i in range(0, 12, 2)).upper() if len(b) == 12 else b.upper()
 
 
+def mask_mac(m, level):
+    """AA:BB:CC:DD:EE:FF -> partial AA:BB:CC:xx:xx:xx, hide [MAC withheld] (same rule as payload.sh tak_mac)."""
+    if level == "partial" and len(m) == 17:
+        return m[:8] + ":xx:xx:xx"
+    if level == "hide":
+        return "[MAC withheld]"
+    return m
+
+
+def mask_name(n, level):
+    """Same rule as payload.sh tak_name: partial = first 2 letters + **, hide = [name withheld]."""
+    if not n or level == "show":
+        return n
+    if level == "partial":
+        return (n[:2] if len(n) > 2 else "") + "**"
+    return "[name withheld]"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("survey")
     ap.add_argument("--out", required=True, help="output path without .zip")
     ap.add_argument("--approved", default="")
+    ap.add_argument("--mask-ssid", choices=("show", "partial", "hide"), default="show",
+                    help="SSIDs in the package (PagerTAK Settings > Privacy)")
+    ap.add_argument("--mask-mac", choices=("show", "partial", "hide"), default="show",
+                    help="BSSIDs in the package (PagerTAK Settings > Privacy)")
     args = ap.parse_args()
 
     name, start, end, callsign = "Survey", 0, 0, "PAGER"
@@ -133,6 +155,9 @@ def main():
     mins = max(1, (end - start) // 60)
     when = time.strftime("%Y-%m-%d %H:%M", time.localtime(start))
     nets = len({r["ssid"] for r in rows if r["ssid"]})
+    for r in rows:                                   # masking after the counts (PagerTAK Settings > Privacy)
+        r["bssid"] = mask_mac(r["bssid"], args.mask_mac)
+        r["ssid"] = mask_name(r["ssid"], args.mask_ssid)
 
     # ---- KML
     k = ['<?xml version="1.0" encoding="UTF-8"?>', '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>',
@@ -157,7 +182,7 @@ def main():
                                                     time.strftime("%H:%M", time.localtime(r["last"]))))
             k.append("<Placemark><name>%s</name><styleUrl>#%s</styleUrl><description><![CDATA[%s]]></description>"
                      "<Point><coordinates>%.7f,%.7f,0</coordinates></Point></Placemark>"
-                     % (esc((r["ssid"] or "hidden") + " " + r["bssid"][-5:]), c, desc, r["lon"], r["lat"]))
+                     % (esc((r["ssid"] or "hidden") + ("" if args.mask_mac != "show" else " " + r["bssid"][-5:])), c, desc, r["lon"], r["lat"]))
         k.append("</Folder>")
     if len(track) >= 2:
         k.append("<Placemark><name>%s</name><styleUrl>#track</styleUrl><LineString><tessellate>1</tessellate>"

@@ -84,6 +84,15 @@ survey_build() {
     [ -s "$SV_ZIP" ] || { ERROR_DIALOG "Package build failed: $(tail -n1 <<< "$out" | cut -c1-80)"; return 1; }
     LOG green "Package: $SV_STATS"
     LOG white "Saved: $SV_ZIP"
+    # Settings > Privacy: loot keeps the full package; TAK gets a masked copy (SV_ZIP then points at it)
+    ids_refresh
+    if ids_masked; then
+        out=$("$PYTHON_BIN" -B "$MAP_DIR/survey_build.py" "$dir" --out "$dir/package-tak" ${approved:+--approved "$approved"} \
+              --mask-ssid "$C_ID_SSID" --mask-mac "$C_ID_MAC" 2>&1)
+        SV_ZIP=$(sed -n 's/^ZIP //p' <<< "$out")
+        [ -s "$SV_ZIP" ] || { ERROR_DIALOG "Masked package build failed: $(tail -n1 <<< "$out" | cut -c1-80)"; return 1; }
+        LOG white "For TAK (privacy masking on): $SV_ZIP"
+    fi
 }
 
 # Upload SV_ZIP to the TAK Server Marti API. Sets SV_URL SV_HASH SV_SIZE

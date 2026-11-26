@@ -486,6 +486,8 @@ def state():
         "map_source": cfg.get("map_source", ""), "quick": [q for q in cfg.get("quick", "").split("|") if q],
         "battery": first_line(rpath("battery")), "queued": queued,
         "unread": len(tail_lines(rpath("unread"), 500)), "receipts": cfg.get("receipts", "1") == "1",
+        "privacy": {k: (cfg.get(k) if cfg.get(k) in ("show", "partial", "hide") else "show")
+                    for k in ("id_ssid", "id_mac", "id_btname")},
         "web": {"listen": cfg.get("web_listen", "all"), "urls": cfg.get("web_urls", "").split()},
         "emergency": em is not None,
         "emergency_info": {"kind": (em[0] if em and em[0] else "911"), "label": em[1] if em and len(em) > 1 else "",

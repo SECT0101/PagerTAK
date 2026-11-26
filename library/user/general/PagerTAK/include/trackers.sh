@@ -119,16 +119,19 @@ trk_following() {
 }
 
 trk_alert() {  # trk_alert LEVEL mac kind name rssi
-    local level=$1 mac=$2 kind=$3 name=$4 rssi=$5 label cs rem chat type uid
+    local level=$1 mac=$2 kind=$3 name=$4 rssi=$5 label cs rem chat type uid tmac tname tag
     label=$(trk_kind_name "$kind")
+    ids_refresh
+    tmac=$(tak_mac "$mac"); tname=$(tak_btname "$name")      # what goes to TAK (Settings > Privacy)
     best_position || { P_LAT=0; P_LON=0; }
+    if [ "$C_ID_MAC" = show ]; then tag=${mac: -5}; else tag=$(tak_idkey "$mac"); tag=${tag:0:4}; fi
     case "$level" in
-        FOLLOWING) type="a-h-G"; cs="FOLLOWING: $kind"; chat="ALERT: $label appears to be FOLLOWING $C_CALLSIGN ($mac, seen across multiple locations)" ;;
-        *)         type="a-u-G"; cs="$kind ${mac: -5}"; chat="$label near $C_CALLSIGN: $mac${name:+ \"$name\"} ${rssi:+${rssi}dBm}" ;;
+        FOLLOWING) type="a-h-G"; cs="FOLLOWING: $kind"; chat="ALERT: $label appears to be FOLLOWING $C_CALLSIGN ($tmac, seen across multiple locations)" ;;
+        *)         type="a-u-G"; cs="$kind $tag"; chat="$label near $C_CALLSIGN: $tmac${tname:+ \"$tname\"} ${rssi:+${rssi}dBm}" ;;
     esac
-    uid="$PRODUCT_NAME-trk-${mac//:/}"
+    uid="$PRODUCT_NAME-trk-$(tak_idkey "$mac")"
     rem="$level - $label
-MAC: $mac${name:+  Name: $name}
+MAC: $tmac${tname:+  Name: $tname}
 Signal: ${rssi:-?} dBm  Detected by: $C_CALLSIGN  $(date '+%F %T')
 Marker = where $C_CALLSIGN heard it."
     if [ "$(cfg_get trk_send 1)" = 1 ]; then

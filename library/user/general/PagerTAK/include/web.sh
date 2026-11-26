@@ -45,6 +45,7 @@ web_cfg_write() {
         printf 'md=%s\nmd_min=%s\nmd_me=%s\nmd_who=%s\nmd_chat=%s\ncot_radius=%s\n' "$(cfg_get md 0)" "$(cfg_get md_min "$MANDOWN_MINUTES")" \
             "$(cfg_get md_me 1)" "$(cfg_get md_who "")" "$(cfg_get md_chat 0)" "$(cfg_get cot_radius "$COT_RADIUS_KM")"
         printf 'cot_hide=%s\nreceipts=%s\n' "$(cfg_get cot_hide "")" "$C_RECEIPTS"
+        printf 'id_ssid=%s\nid_mac=%s\nid_btname=%s\n' "$C_ID_SSID" "$C_ID_MAC" "$C_ID_BTNAME"
         printf 'setup=%s\n' "$([ -f "$RUN/setup_mode" ] && echo 1 || echo 0)"
         printf 'web_listen=%s\nweb_urls=%s\n' "$(cfg_get web_listen all)" "$(web_urls | tr '\n' ' ')"
         if [ "${SETUP_LOADED:-0}" = 1 ] && [ "$C_PROTO" = tls ]; then
@@ -182,7 +183,7 @@ web_cmd_loop() {
         if [ $((n % 10)) -eq 0 ]; then
             [ -f "$RUN/reload" ] || load_config
             web_cfg_write
-            local b; b=$(BATTERY_PERCENT 2>/dev/null); b=${b//[^0-9]/}; [ -n "$b" ] && printf '%s\n' "$b" > "$RUN/battery"
+            battery_read; [ -n "$B_PCT" ] && printf '%s\n' "$B_PCT" > "$RUN/battery"
         fi
         n=$((n + 1))
         sleep 1
@@ -484,6 +485,12 @@ web_settings() {
         v=${W[cot_hide]}; [[ $v =~ ^[a-z,]{0,80}$ ]] || { echo "err|Bad filter"; return; }
         cfg_set cot_hide "$v"; changed=1
     fi
+    for v in id_ssid id_mac id_btname; do
+        if [ -n "${W[$v]+x}" ]; then
+            web_in "${W[$v]}" show partial hide || { echo "err|Privacy: show, partial or hide"; return; }
+            cfg_set "$v" "${W[$v]}"; changed=1
+        fi
+    done
     if [ -n "${W[cot_radius]+x}" ]; then
         v=${W[cot_radius]}; [[ $v =~ ^[0-9]{1,4}$ ]] || { echo "err|Radius in whole km (0 = everything)"; return; }
         cfg_set cot_radius "$v"; changed=1
@@ -754,9 +761,8 @@ web_qr() {
     if ! configure_python; then
         ERROR_DIALOG "The QR screen needs python3-light. Open Map once to install it."; LOG white "$url"; return
     fi
-    UI_TAKEOVER >/dev/null 2>&1
-    PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" -B "$MAP_DIR/qr_show.py" --url "$url" > ${LOG_TMP:-/tmp/pagertak}-qr.log 2>&1
-    UI_RELEASE >/dev/null 2>&1
+    ui_run "${LOG_TMP:-/tmp/pagertak}-qr.log" env PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" -B "$MAP_DIR/qr_show.py" --url "$url" \
+        || [ $? = 75 ] || LOG white "$url"
 }
 
 web_cert() {  # web_cert client|ca FILE

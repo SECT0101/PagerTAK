@@ -2,7 +2,7 @@
 # Title: PagerTAK
 # Description: Puts the Pager on the TAK map (GPS position as CoT) with GeoChat, alerts, field reports, Wi-Fi/BLE/drone sensors and a browser web console
 # Author: SECT0101
-# Version: 2.3.2
+# Version: 2.3.3
 # Category: General
 #
 # Core (no extra packages):
@@ -82,12 +82,17 @@ RX_FEED_MIN_SEC="10"            # feeds and markers: use at most one update per 
 COT_RADIUS_KM="0"               # only show TAK items within this many km of you (0 = everything)
 WEB_PORT="8484"                 # web console port (Settings > Web console; off until you turn it on)
 MANDOWN_MINUTES="10"            # man-down watchdog: minutes without movement (off until you turn it on)
+ID_SSID="show"                  # Wi-Fi network names in what goes to TAK: show | partial (first 2 letters) | hide
+ID_MAC="show"                   # BSSIDs / MAC addresses sent to TAK: show | partial (vendor half, aa:bb:cc:xx:xx:xx) | hide
+ID_BTNAME="show"                # Bluetooth device names sent to TAK: show | partial | hide
+                                # (Settings > Privacy. Loot logs on the Pager always keep full detail;
+                                #  drone Remote ID is broadcast publicly and is never masked)
 
 #############################################################################
 # Internals - no changes needed below this line
 #############################################################################
 
-PAYLOAD_VERSION="2.3.2"
+PAYLOAD_VERSION="2.3.3"
 DEVICE_NAME="WiFi Pineapple Pager"
 PRODUCT_NAME=${PRODUCT_NAME:-PagerTAK}    # name in messages and CoT (PineappleTAK on the Mark VII)
 DEVICE_WORD=${DEVICE_WORD:-Pager}          # what messages call this device
@@ -110,6 +115,7 @@ LOOT_DIR="/root/loot/PagerTAK"
 MAP_DIR="$PAYLOAD_DIR/map"
 TILE_DIR="$PAYLOAD_DIR/tiles"
 RUN="/tmp/pagertak"
+PAGER_API_SOCK="/tmp/api.sock"   # Pager firmware local API (2.x)
 QUICK_DEFAULT=("${QUICK_MESSAGES[@]}")
 
 # bash 5.2+ treats '&' in ${var//pat/rep} as "matched text"; XML escaping needs it literal
@@ -179,6 +185,11 @@ load_config() {
         C_UID="$PRODUCT_NAME-$(head -c 8 /proc/sys/kernel/random/uuid)"
         cfg_set uid "$C_UID"
     fi
+    ids_refresh
+    C_ID_SALT=$(cfg_get id_salt "")
+    if [ -z "$C_ID_SALT" ]; then           # per-device secret: masked marker uids can't be reversed to a MAC
+        C_ID_SALT=$(head -c 36 /proc/sys/kernel/random/uuid | tr -d '-'); cfg_set id_salt "$C_ID_SALT"
+    fi
     [[ "$C_INTERVAL" =~ ^[0-9]+$ ]] && [ "$C_INTERVAL" -ge 5 ] || C_INTERVAL=30
     [ "$C_RINGTONE" = "none" ] && C_RINGTONE=""
     return 0
@@ -200,6 +211,56 @@ xml_unesc() {
 iso_time() { date -u -d "@$1" '+%Y-%m-%dT%H:%M:%S.000Z'; }
 
 new_id() { cat /proc/sys/kernel/random/uuid; }
+
+#############################################################################
+# Identifier privacy (Settings > Privacy) - applied ONLY to what goes to TAK.
+# Loot logs keep full detail. Remote ID is never masked (it is broadcast publicly).
+#############################################################################
+
+# tak_mac MAC   (aabbccddeeff or aa:bb:cc:dd:ee:ff) -> as set by id_mac
+tak_mac() {
+    local h=${1//[:-]/}; h=${h,,}
+    [[ $h =~ ^[0-9a-f]{12}$ ]] || { printf '%s' "$1"; return; }
+    local m="${h:0:2}:${h:2:2}:${h:4:2}:${h:6:2}:${h:8:2}:${h:10:2}"; m=${m^^}
+    case "$C_ID_MAC" in
+        partial) printf '%s' "${m:0:8}:xx:xx:xx" ;;
+        hide)    printf '%s' "[MAC withheld]" ;;
+        *)       printf '%s' "$m" ;;
+    esac
+}
+
+# tak_name LEVEL "name"  -> shared rule for SSIDs and Bluetooth names ("" stays "")
+tak_name() {
+    [ -n "$2" ] || return 0
+    case "$1" in
+        partial) if [ "${#2}" -le 2 ]; then printf '%s' "**"; else printf '%s' "${2:0:2}**"; fi ;;
+        hide)    printf '%s' "[name withheld]" ;;
+        *)       printf '%s' "$2" ;;
+    esac
+}
+tak_ssid()   { tak_name "$C_ID_SSID" "$1"; }
+tak_btname() { tak_name "$C_ID_BTNAME" "$1"; }
+
+# tak_idkey MAC -> part of a CoT uid. The MAC itself when MACs are shown, else a
+# salted hash so the same device keeps one marker without its MAC in the uid.
+tak_idkey() {
+    local h=${1//[:-]/}; h=${h,,}
+    if [ "$C_ID_MAC" = show ]; then printf '%s' "$h"; return; fi
+    printf '%s%s' "$C_ID_SALT" "$h" | sha256sum | cut -c1-12
+}
+
+# Re-read the three privacy settings. Alerts call this first: background watchers
+# started before a change in Settings / the web console still get the new rule.
+ids_refresh() {
+    local v
+    C_ID_SSID=$(cfg_get id_ssid "$ID_SSID"); C_ID_MAC=$(cfg_get id_mac "$ID_MAC"); C_ID_BTNAME=$(cfg_get id_btname "$ID_BTNAME")
+    for v in C_ID_SSID C_ID_MAC C_ID_BTNAME; do
+        case "${!v}" in show|partial|hide) ;; *) printf -v "$v" '%s' show ;; esac
+    done
+}
+
+# true when any identifier is masked (survey upload builds a masked copy)
+ids_masked() { [ "$C_ID_SSID$C_ID_MAC$C_ID_BTNAME" != showshowshow ]; }
 
 json_num() {  # json_num "<json line>" key
     local re="\"$2\":(-?[0-9.]+)"
@@ -285,22 +346,41 @@ recon_stats() {
     return 0
 }
 
+# Battery: firmware BATTERY_PERCENT / BATTERY_CHARGING, else the fuel gauge in /sys.
+# Sets B_PCT (0-100, "" = unknown: no battery is reported rather than a false 0%) and B_CHG (1/0).
+BATT_SYS="/sys/class/power_supply/bq27546-0"
+battery_read() {
+    local v c
+    B_PCT=""; B_CHG=0
+    v=$(BATTERY_PERCENT 2>/dev/null); v=${v//[^0-9]/}
+    if ! [[ $v =~ ^[0-9]{1,3}$ ]] || [ "$v" -gt 100 ]; then
+        v=""; [ -r "$BATT_SYS/capacity" ] && read -r v < "$BATT_SYS/capacity" 2>/dev/null
+        [[ $v =~ ^[0-9]{1,3}$ ]] && [ "$v" -le 100 ] || v=""
+    fi
+    B_PCT=$v
+    c=$(BATTERY_CHARGING 2>/dev/null)
+    [ -z "$c" ] && [ -r "$BATT_SYS/status" ] && read -r c < "$BATT_SYS/status" 2>/dev/null
+    case "$c" in 1|true|yes|charging|Charging|Full) B_CHG=1 ;; esac
+}
+
 cot_sa() {
     best_position || return 1
     local now stale batt chg remarks cs team role
     now=$(date +%s); stale=$((now + C_INTERVAL + 30))
-    batt=$(BATTERY_PERCENT 2>/dev/null); batt=${batt//[^0-9]/}; [ -z "$batt" ] && batt=0
-    chg=$(BATTERY_CHARGING 2>/dev/null)
+    battery_read; batt=$B_PCT; chg=$B_CHG
     cs=$(xml_esc "$C_CALLSIGN"); team=$(xml_esc "$C_TEAM"); role=$(xml_esc "$C_ROLE")
-    remarks="$DEVICE_NAME | Batt ${batt}%"
-    case "$chg" in 1|true|yes|charging|Charging) remarks+=" (charging)" ;; esac
+    remarks="$DEVICE_NAME"
+    if [ -n "$batt" ]; then remarks+=" | Batt ${batt}%"; [ "$chg" = 1 ] && remarks+=" (charging)"; fi
+    local gst=""; [ -r "$RUN/gps_state" ] && read -r gst < "$RUN/gps_state"
     if [ "$P_HOW" = "m-g" ]; then
-        remarks+=" | GPS fix, ${G_SATS} sats"
+        case "$gst" in 3d) remarks+=" | GPS 3D fix" ;; 2d) remarks+=" | GPS 2D fix" ;; *) remarks+=" | GPS fix" ;; esac
+        [ "$G_SATS" != "-" ] && remarks+=", ${G_SATS} sats"
     elif [ "$P_SRC" = "GPS" ]; then
         remarks+=" | NO FIX - last known position"
     else
         remarks+=" | NO FIX - manual position"
     fi
+    [ "$gst" = nogps ] && remarks+=" (GPS not connected)"
     local recon_xml=""
     if recon_stats; then
         remarks+=" | Sensor $((RECON_WINDOW / 60))m: ${R_APS} APs (${R_OPEN} open), ${R_CLIENTS} clients"
@@ -314,7 +394,7 @@ cot_sa() {
 "<uid Droid=\"$cs\"/>"\
 "<__group name=\"$team\" role=\"$role\"/>"\
 "<precisionlocation geopointsrc=\"$P_SRC\" altsrc=\"$P_SRC\"/>"\
-"<status battery=\"$batt\"/>"\
+"${batt:+<status battery=\"$batt\"/>}"\
 "<track course=\"${G_TRACK:-0}\" speed=\"${G_SPEED:-0}\"/>"\
 "<remarks>$(xml_esc "$remarks")</remarks>"\
 "$recon_xml"\
@@ -432,10 +512,27 @@ queue_cot() {
 gps_loop() {
     local have_pipe=0 raw lat lon alt acc out tpv sky spd trk sats hae t
     command -v gpspipe >/dev/null 2>&1 && have_pipe=1
+    local api fix conn st
     while [ ! -f "$RUN/stop" ]; do
-        raw=$(timeout 5 GPS_GET 2>/dev/null)
-        read -r lat lon alt acc _ <<< "$raw"
-        spd="-"; trk="-"; sats="-"; hae=${alt:--}
+        # Pager API first (firmware 2.x): fix quality and whether a GPS is connected at all.
+        # Older firmware has no API; GPS_GET alone is used then.
+        api=$(timeout 4 curl -s -m 3 --unix-socket "$PAGER_API_SOCK" "http://localhost/api/pineap/gps/get" 2>/dev/null)
+        spd="-"; trk="-"; sats="-"; st=""
+        if [[ $api == *'"connected":'* ]]; then
+            fix=$(json_num "$api" fix); conn=false; [[ $api == *'"connected":true'* ]] && conn=true
+            lat=$(json_num "$api" lat); lon=$(json_num "$api" lon); alt=$(json_num "$api" alt)
+            acc=$(json_num "$api" hprecision)
+            t=$(json_num "$api" sats_tracked); [[ $t =~ ^[0-9]+$ ]] && sats=$t
+            if [ "$conn" != true ]; then st=nogps; lat=""; lon=""
+            elif [ "${fix:-0}" -ge 3 ] 2>/dev/null; then st=3d
+            elif [ "${fix:-0}" -ge 2 ] 2>/dev/null; then st=2d
+            else st=nofix; lat=""; lon=""
+            fi
+        else
+            raw=$(timeout 5 GPS_GET 2>/dev/null)
+            read -r lat lon alt acc _ <<< "$raw"
+        fi
+        hae=${alt:--}
         if [ "$have_pipe" = 1 ]; then
             out=$(timeout 3 gpspipe -w -n 12 2>/dev/null)
             tpv=$(printf '%s\n' "$out" | grep -m1 '"class":"TPV"')
@@ -462,6 +559,7 @@ gps_loop() {
             printf '0 - - - - - - %s %s\n' "$sats" "$(date +%s)" > "$RUN/gps.tmp"
         fi
         mv "$RUN/gps.tmp" "$RUN/gps"
+        printf '%s\n' "${st:-unknown}" > "$RUN/gps_state"      # nogps | nofix | 2d | 3d | unknown (no API)
         sleep 4
     done
 }
@@ -961,8 +1059,11 @@ show_status() {
     LOG white "$C_PROTO://$C_HOST:$C_PORT"
     LOG white "Link: ${st:-starting}  Last SA: ${lastsa:-never}"
     [ -n "$err" ] && LOG yellow "Last error: $err"
-    if read_gps; then LOG green "GPS: $G_LAT, $G_LON  sats $G_SATS"
-    else LOG yellow "GPS: no fix"; fi
+    local gst=""; [ -r "$RUN/gps_state" ] && read -r gst < "$RUN/gps_state"
+    if read_gps; then LOG green "GPS: $G_LAT, $G_LON  $([[ $gst == [23]d ]] && printf "%s " "${gst^^}")sats $G_SATS"
+    elif [ "$gst" = nogps ]; then LOG yellow "GPS: not connected (Settings > GPS)"
+    else LOG yellow "GPS: no fix${G_SATS:+ (sats $G_SATS)}"; fi
+    battery_read; [ -n "$B_PCT" ] && LOG white "Battery: ${B_PCT}%$([ "$B_CHG" = 1 ] && echo ' (charging)')"
     LOG white "Contacts: $n   Queued: $q   Unread chat: $(unread_count)"
     [ -f "$RUN/emergency" ] && { emerg_read; LOG red "EMERGENCY ACTIVE: $E_LABEL"; }
     [ "${WEB_LOADED:-0}" = 1 ] && web_running && LOG white "Web: $(web_urls | head -n1)"
@@ -1102,6 +1203,70 @@ install_map() {
     return 1
 }
 
+#############################################################################
+# Screen ownership (UI_TAKEOVER) - shared with other Pager apps
+#   - needs firmware 2.0.0+ (UI_TAKEOVER / UI_RELEASE)
+#   - holds the shared display lock (flock) that Glytch's NetRider/PagerScribe use,
+#     so only one custom app owns the screen at a time
+#   - a detached watchdog hands the screen back to the stock UI if the payload
+#     is stopped or killed while the map is up
+#############################################################################
+UI_LOCK="/tmp/pagerscribe-display.lock"            # shared display lock (NetRider holds it too)
+UI_LOCKS_OTHER="/tmp/netrider-display.lock"         # also checked, never held
+UI_OWNER="/tmp/pagertak-ui.owner"                   # pid of our screen app; outside $RUN (cleanup wipes $RUN)
+
+fw_at_least() {  # fw_at_least MAJOR.MINOR -> true when /etc/pineapplepager/version is that or newer
+    local v maj min want_maj=${1%%.*} want_min=${1#*.}
+    read -r v < /etc/pineapplepager/version 2>/dev/null || return 0     # unknown: let UI_TAKEOVER decide
+    maj=${v%%.*}; min=${v#*.}; min=${min%%.*}
+    [[ $maj =~ ^[0-9]+$ && $min =~ ^[0-9]+$ ]] || return 0
+    [ "$maj" -gt "$want_maj" ] || { [ "$maj" -eq "$want_maj" ] && [ "$min" -ge "$want_min" ]; }
+}
+
+# ui_claim: claim the release job once (main shell or watchdog, never both)
+ui_claim() { [ "$(cat "$UI_OWNER" 2>/dev/null)" = "$1" ] && mv "$UI_OWNER" "$UI_OWNER.$BASHPID" 2>/dev/null && rm -f "$UI_OWNER.$BASHPID"; }
+
+# ui_run LOGFILE CMD... -> runs CMD as the screen owner. Returns CMD's status, 75 = could not start.
+ui_run() {
+    local log=$1 fd="" pid rc f; shift
+    if ! fw_at_least 2.0; then
+        ERROR_DIALOG "The Pager screen apps need firmware 2.0.0 or newer (this Pager: $(head -n1 /etc/pineapplepager/version 2>/dev/null))."
+        return 75
+    fi
+    if command -v flock >/dev/null 2>&1; then
+        exec {fd}>>"$UI_LOCK" || fd=""
+        if [ -n "$fd" ] && ! flock -n "$fd"; then
+            exec {fd}>&-; ERROR_DIALOG "Another app has the screen (NetRider or another payload). Close it, then try again."; return 75
+        fi
+        for f in $UI_LOCKS_OTHER; do
+            if [ -e "$f" ] && ! flock -n "$f" true 2>/dev/null; then
+                [ -n "$fd" ] && exec {fd}>&-
+                ERROR_DIALOG "Another app has the screen (NetRider or another payload). Close it, then try again."; return 75
+            fi
+        done
+    fi
+    if ! UI_TAKEOVER >/dev/null 2>&1; then
+        [ -n "$fd" ] && exec {fd}>&-
+        ERROR_DIALOG "Could not take over the display (UI_TAKEOVER). Update the Pager firmware."
+        return 75
+    fi
+    "$@" 2> "$log" &
+    pid=$!
+    printf '%s\n' "$pid" > "$UI_OWNER"
+    # Watchdog: own session, ignores the payload's signals; releases only if the main shell could not.
+    local wd='trap "" HUP INT TERM; [ -n "$3" ] && eval "exec $3>&-"; while kill -0 "$1" 2>/dev/null; do read -r _ _ z _ < "/proc/$1/stat" 2>/dev/null; [ "$z" = Z ] && break; sleep 1; done; sleep 1
+        [ "$(cat "$2" 2>/dev/null)" = "$1" ] && mv "$2" "$2.wd" 2>/dev/null && { rm -f "$2.wd"; UI_RELEASE >/dev/null 2>&1; }'
+    if command -v setsid >/dev/null 2>&1; then
+        setsid bash -c "$wd" ptak-ui-watchdog "$pid" "$UI_OWNER" "$fd" </dev/null >/dev/null 2>&1 &
+    else
+        ( bash -c "$wd" ptak-ui-watchdog "$pid" "$UI_OWNER" "$fd" </dev/null >/dev/null 2>&1 & )
+    fi
+    wait "$pid"; rc=$?
+    ui_claim "$pid" && UI_RELEASE >/dev/null 2>&1
+    [ -n "$fd" ] && exec {fd}>&-
+    return "$rc"
+}
+
 map_view() {  # map_view [lat,lon] [extra map args...]
     local args rc center=$1; shift
     if ! map_ready; then install_map || return; fi
@@ -1112,13 +1277,9 @@ map_view() {  # map_view [lat,lon] [extra map args...]
     [ -n "$center" ] && args+=(--center "$center")
     args+=("$@")
     [ -n "$C_MANUAL" ] && args+=(--manual "${C_MANUAL// /}")
-    if ! UI_TAKEOVER >/dev/null 2>&1; then
-        ERROR_DIALOG "Could not take over the display (UI_TAKEOVER). Update the Pager firmware."
-        return
-    fi
-    PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" -B "$MAP_DIR/pagertak_map.py" "${args[@]}" 2> ${LOG_TMP:-/tmp/pagertak}-map.log
+    ui_run "${LOG_TMP:-/tmp/pagertak}-map.log" env PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" -B "$MAP_DIR/pagertak_map.py" "${args[@]}"
     rc=$?
-    UI_RELEASE >/dev/null 2>&1
+    [ "$rc" = 75 ] && return           # screen busy / firmware too old: ui_run already said so
     [ "$rc" -ne 0 ] && LOG red "Map exited ($rc) - see ${LOG_TMP:-/tmp/pagertak}-map.log"
     # remember the basemap picked on the map (hold B + A)
     if [ -s "$RUN/map_source" ]; then
@@ -1441,10 +1602,30 @@ menu_settings_map() {
     done
 }
 
+# Settings > Privacy: how Wi-Fi / Bluetooth identifiers appear in what goes to TAK
+id_level_label() { case "$1" in partial) echo Partial ;; hide) echo Hide ;; *) echo Show ;; esac; }
+id_level_next()  { case "$1" in show) echo partial ;; partial) echo hide ;; *) echo show ;; esac; }
+menu_settings_privacy() {
+    local r last a b c
+    while :; do
+        a="SSID: $(id_level_label "$C_ID_SSID")"; b="MAC/BSSID: $(id_level_label "$C_ID_MAC")"; c="BT name: $(id_level_label "$C_ID_BTNAME")"
+        r=$(LIST_PICKER "Privacy (sent to TAK)" "$a" "$b" "$c" "About" "< Back" "${last:-$a}"); picker_ok $? || return
+        case "$r" in
+            SSID:*)      cfg_set id_ssid "$(id_level_next "$C_ID_SSID")"; settings_apply; last="SSID: $(id_level_label "$C_ID_SSID")" ;;
+            MAC/BSSID:*) cfg_set id_mac "$(id_level_next "$C_ID_MAC")"; settings_apply; last="MAC/BSSID: $(id_level_label "$C_ID_MAC")" ;;
+            BT\ name:*)  cfg_set id_btname "$(id_level_next "$C_ID_BTNAME")"; settings_apply; last="BT name: $(id_level_label "$C_ID_BTNAME")" ;;
+            "About")     PROMPT "Applies to alerts, markers, chats and site-survey uploads sent to TAK.
+Partial: vendor half of a MAC (AA:BB:CC:xx:xx:xx), first 2 letters of a name.
+Loot logs on the Pager keep full detail. Drone Remote ID is never masked." ; last=About ;;
+            *) return ;;
+        esac
+    done
+}
+
 settings_menu() {
     local r last="TAK server >"
     while :; do
-        r=$(LIST_PICKER "Settings" "TAK server >" "Identity >" "Position >" "Map >" "Web console >" "Chat sound" "Clear received items" "Reset all settings" "< Back" "$last")
+        r=$(LIST_PICKER "Settings" "TAK server >" "Identity >" "Position >" "Map >" "Privacy >" "Web console >" "Chat sound" "Clear received items" "Reset all settings" "< Back" "$last")
         picker_ok $? || return
         last=$r
         case "$r" in
@@ -1452,6 +1633,7 @@ settings_menu() {
             "Identity >")   menu_settings_identity ;;
             "Position >")   menu_settings_position ;;
             "Map >")        menu_settings_map ;;
+            "Privacy >")    menu_settings_privacy ;;
             "Clear received items")
                 [ "$(CONFIRMATION_DIALOG "Clear everything received from TAK (users, markers, aircraft...)? Your own markers and zones stay.")" = "$DUCKYSCRIPT_USER_CONFIRMED" ] && clear_received > /dev/null ;;
             "Web console >")
@@ -1459,7 +1641,7 @@ settings_menu() {
             "Chat sound")   set_ringtone; settings_apply ;;
             "Reset all settings")
                 if [ "$(CONFIRMATION_DIALOG "Erase all PagerTAK settings?")" = "$DUCKYSCRIPT_USER_CONFIRMED" ]; then
-                    for k in host proto port callsign team role interval manual_pos ringtone tile_url map_source recon medevac_freq watch watch_profile watch_new_open watch_any_new trk trk_follow trk_any trk_flockaxon trk_send rid rid_channel rid_chat survey_share api_port web web_port web_listen web_https md md_min md_me md_who md_chat cot_radius cot_hide configured; do
+                    for k in host proto port callsign team role interval manual_pos ringtone tile_url map_source recon medevac_freq watch watch_profile watch_new_open watch_any_new trk trk_follow trk_any trk_flockaxon trk_send rid rid_channel rid_chat survey_share api_port web web_port web_listen web_https md md_min md_me md_who md_chat cot_radius cot_hide id_ssid id_mac id_btname id_salt configured; do
                         PAYLOAD_DEL_CONFIG "$CFG_NS" "$k" >/dev/null 2>&1
                     done
                     LOG yellow "Settings erased - restart PagerTAK"
@@ -1573,6 +1755,7 @@ main_menu() {
 
 cleanup() {
     : > "$RUN/stop" 2>/dev/null
+    [ -s "$UI_OWNER" ] && kill "$(cat "$UI_OWNER")" 2>/dev/null    # map/QR still up: watchdog releases the screen
     [ -n "$ENGINE_PID" ] && kill "$ENGINE_PID" 2>/dev/null
     [ -n "$GPS_PID" ] && kill "$GPS_PID" 2>/dev/null
     [ -f "$RUN/watch.pid" ] && kill "$(cat "$RUN/watch.pid")" 2>/dev/null

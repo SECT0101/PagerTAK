@@ -360,7 +360,7 @@ def fetch_tile(src, path, z, x, y):
         urls.append(tile_url(src, z, x, y))           # export refused: the plain tile still serves the browser
     for url in urls:
         try:
-            r = subprocess.run(["curl", "-sf", "--max-time", "15", "-A", "PagerTAK/2.3.2 (WiFi Pineapple Pager)",
+            r = subprocess.run(["curl", "-sf", "--max-time", "15", "-A", "PagerTAK/2.3.3 (WiFi Pineapple Pager)",
                                 "-o", tmp, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
             if r.returncode == 0 and os.path.getsize(tmp) > 100:
                 os.replace(tmp, path)

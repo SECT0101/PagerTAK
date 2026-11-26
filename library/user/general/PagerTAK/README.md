@@ -1,7 +1,7 @@
 # PagerTAK – Hak5 WiFi Pineapple Pager Payload
 
 **Author:** SECT0101
-**Version:** 2.3.2
+**Version:** 2.3.3
 **Category:** General
 **Platform:** Hak5 WiFi Pineapple Pager (with USB GPS)
 **Protocol:** TAK Cursor-on-Target (CoT) XML over TLS / TCP / UDP
@@ -80,6 +80,7 @@ PagerTAK
 │   ├── Identity >    Callsign · Team color · Role
 │   ├── Position >    Manual position · Report interval
 │   ├── Map >         Map source · Custom tile URL · Cache map tiles
+│   ├── Privacy >     SSID · MAC/BSSID · BT name (Show / Partial / Hide, for what goes to TAK)
 │   ├── Web console > On/Off · Show address · Show QR code · Set password · Listen on · Port · HTTPS
 │   ├── Chat sound
 │   ├── Clear received items
@@ -180,7 +181,9 @@ Or create a **dedicated client certificate for the Pager** on your TAK Server (f
 
 The map is optional. The first time you open **Menu > Map**, PagerTAK offers to install `python3-light` from opkg (to the SD card when available). Nothing else is downloaded: the screen driver, `map/pagerfb.py`, is PagerTAK's own pure-Python code. It draws to the Pager's framebuffer, reads the buttons, and decodes PNG tiles itself. USGS basemaps are fetched as PNG for the Pager screen; the browser map still uses the normal tiles.
 
-The map takes over the screen with the `UI_TAKEOVER` / `UI_RELEASE` commands, so it needs **current Pager firmware**. While the map is open, PagerTAK keeps reporting position and receiving chat in the background.
+The map takes over the screen with the `UI_TAKEOVER` / `UI_RELEASE` commands, so it needs **Pager firmware 2.0.0 or newer** (PagerTAK checks and says so). While the map is open, PagerTAK keeps reporting position and receiving chat in the background.
+
+Only one app can own the screen. PagerTAK takes the same shared display lock (`/tmp/pagerscribe-display.lock`, via `flock`) that Glytch's NetRider uses, so if NetRider or another screen app is open, PagerTAK says *Another app has the screen* instead of fighting over it, and the other app sees PagerTAK the same way. If PagerTAK is stopped or killed while the map or QR screen is up, a small watchdog hands the screen back to the Pager's own UI.
 
 ### Basemaps (ATAK map source XML)
 
@@ -409,8 +412,24 @@ All options are set on the device (**A > Settings**) and kept across reboots. Th
 | `COT_RADIUS_KM` | `0` | range filter for TAK items (0 = everything); also on the web map |
 | `WEB_PORT` | `8484` | web console port; the console stays off until you turn it on |
 | `MANDOWN_MINUTES` | `10` | man-down watchdog time; the watchdog stays off until you turn it on |
+| `ID_SSID` / `ID_MAC` / `ID_BTNAME` | `show` | identifiers in what goes to TAK: `show`, `partial` or `hide`; also *Settings > Privacy* (see below) |
 
 **Settings > Reset all settings** clears the saved configuration.
+
+### 🔒 Privacy (what goes to TAK)
+
+*Settings > Privacy* on the Pager, or *Settings > Privacy (sent to TAK)* in the web console, sets how Wi-Fi and Bluetooth identifiers appear in what PagerTAK sends to TAK: evil-twin and tracker alerts (markers and chat), the [Deauth Alert](../../../alerts/deauth_flood_detected/PagerTAK_Deauth_Alert/) payload, and site-survey uploads. Each one has its own setting:
+
+| Setting | Show (default) | Partial | Hide |
+|---|---|---|---|
+| SSID | `HomeNet` | `Ho**` | `[name withheld]` |
+| MAC / BSSID | `AA:BB:CC:DD:EE:FF` | `AA:BB:CC:xx:xx:xx` (vendor half) | `[MAC withheld]` |
+| Bluetooth name | `Flock-123` | `Fl**` | `[name withheld]` |
+
+- With MACs masked, marker UIDs use a short code made from a random per-Pager secret instead of the MAC. The same device still keeps one marker, but the MAC can't be worked out from the UID. *Reset all settings* makes a new secret.
+- A site survey upload is built twice when anything is masked: the full package stays in loot, and TAK gets the masked copy.
+- **Loot logs on the Pager always keep full detail**, and the web console (on the Pager itself) shows full detail.
+- **Drone Remote ID is never masked**: UAS and operator IDs are broadcast publicly so drones can be identified.
 
 ---
 
@@ -433,6 +452,8 @@ To update PagerTAK, copy the new folder over the old one. Your settings live in 
 ## 📝 Notes & Limitations
 
 - The Pager's UID (`PagerTAK-xxxxxxxx`) is generated once and saved, so it keeps the same map icon across runs.
+- **GPS** is read from the Pager's local API (`/tmp/api.sock`, `pineap/gps/get`) on firmware 2.x, which tells *no GPS connected* apart from *no fix* and gives the fix type (2D / 3D) and satellites. On older firmware PagerTAK falls back to `GPS_GET`. `gpspipe`, when installed, still adds course and speed.
+- **Battery** comes from `BATTERY_PERCENT`, or the fuel gauge in `/sys/class/power_supply/bq27546-0/` when that fails. If neither answers, the position report leaves battery out rather than sending 0%.
 - **Direct messages** need the recipient to have reported a position since PagerTAK started. That is how the Pager learns their UID.
 - In **UDP** mode the Pager can send position and chat but cannot receive.
 - **Received items expire the way they do in ATAK**: each item is dropped when its own CoT stale time passes, when another client deletes it (`t-x-d-d`), or after `TRACK_MAX_AGE` without an update. TAK users are the exception: past their stale time they stay on the map greyed out, like in ATAK, until `TRACK_MAX_AGE`. Stale times are counted from each event's own time, so a clock difference between devices does not remove fresh contacts. The Pager prunes them from memory every minute. Feeds that keep re-sending an item (traffic, ADS-B) keep it on the map; hide the group in *Items*, or untick the feed's TAK channel so the server stops sending it.
@@ -448,6 +469,7 @@ To update PagerTAK, copy the new folder over the old one. Your settings live in 
 
 Tested off the device against a mock TAK Server (TCP 8087 and mutual-TLS 8089), a mock Marti API and test doubles for the Pager commands, newest first. Real-hardware checks so far: TLS connection with server-converted certificates, ATAK connection package import, chat both ways with ATAK and CloudTAK with delivered / read receipts, deleting and clearing chat, photo sharing, KML overlays, Pager geofences, the Pager map (zoom, pan) with a manual position, and the web console over Wi-Fi.
 
+- 2.3.3: run on a Pager with firmware 2.1.0; the Pager's GPS API (`pineap/gps/get`) and NetRider's display locks checked on the device (held with `flock` while NetRider is open, free after). Off the device: GPS parsing for no GPS, no fix, 3D fix and firmware without the API; screen ownership with test doubles for `UI_TAKEOVER` / `UI_RELEASE` (normal exit, crash, NetRider or the shared lock already held, payload shell killed with the map open: the watchdog released the screen exactly once); Show / Partial / Hide for SSIDs, MACs and Bluetooth names, masked UIDs stable per device; Deauth Alert masking MACs inside the firmware's alert text; battery fallback to the fuel gauge and no battery sent when unknown.
 - 2.3: connection check and TCP link without the `timeout` command or Bash's `/dev/tcp` (Python fallback), with the reason a port did not answer; enrollment against a server whose port 8446 has a public certificate (TAK CA first, then the public CA list, never unchecked); evil-twin learning and saving from the web console against a recon database; receipts matched with the console and payload in different time zones. Shared with [PineappleTAK](https://github.com/SECT0101/PineappleTAK-MK7) and checked on a real WiFi Pineapple Mark VII and TAK Server: enrollment, TLS connection, chat, evil-twin watch, tracker watch, drone Remote ID and start at boot.
 - 2.2: delivered / read receipts both ways (receipt sent for a direct message, read receipt when Chat is opened, status of our own message moving to delivered then read and never back), unread count and reply, quick messages saved and cleared from the web console, a geofence for one contact, and the Navigate screen drawn into a file-backed framebuffer; receiver throughput with 6 MB of simulated busy-server traffic (20,000 aircraft updates plus chats): 6.5 s against about 5 minutes before, every chat and contact delivered; TAK users kept (greyed) past their stale time and dropped after `TRACK_MAX_AGE`; stale time measured from the event's own time with the Pager clock 10 minutes off; enrollment with a password containing quotes, a backslash, a space and `$`; everything below with Python modules that python3-light lacks blocked (`urllib`, `uuid`, `email`, `xml`, `ctypes` and others). Screen driver: PNG decoding checked pixel-exact against a reference decoder for RGB, RGBA, gray, gray+alpha, 1/4/8-bit palette and all five row filters; the map and the self-test drawn into a file-backed framebuffer and checked as screenshots. Browser setup end to end: setup mode, server settings, enrollment against a mock TAK Server (wrong password refused; CSR subject built from the server's `tls/config`; signed certificate and CA saved), ATAK connection package import, `.p12` upload (wrong password reported), connection test against a mutual-TLS server (no certificate, rejected certificate, success), Finish setup releasing the waiting payload; photo shared to a mock Marti API with the client certificate and the result written to the chat; setup page checked in headless Chrome. Own Remote ID receiver decoded Wi-Fi beacon (message pack), NAN service discovery and Bluetooth (btmon) Remote ID into the same state the bridge reads; file upload over TLS when the API certificate name does not match the address (falls back and still sends), with the reason shown in the page when an upload fails.
 - 2.1: stale times read from CoT (pure-Bash ISO time conversion), already-stale events dropped, a TDOT-style incident expiring on its stale time, `t-x-d-d` delete removing an item, memory pruning, category counts and hide filters (web and Pager map), *Clear received items*, ADS-B aircraft no longer shown as drones, Contacts and Items tabs checked in headless Chrome.

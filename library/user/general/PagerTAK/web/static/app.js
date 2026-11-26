@@ -623,6 +623,8 @@ function fillSettings() {
   $("#set-alerts").sound.checked = lsGet("ptak.sound") !== "0";
   const w = S.web || {}; $("#set-access").mode.value = w.listen || "all";
   $("#access-urls").textContent = (w.urls || []).length ? "Reachable at: " + w.urls.join("  ") : "";
+  const pv = $("#set-privacy"), pr = S.privacy || {};
+  pv.id_ssid.value = pr.id_ssid || "show"; pv.id_mac.value = pr.id_mac || "show"; pv.id_btname.value = pr.id_btname || "show";
   const qf = $("#set-quick"); qf.quick_text.value = (S.quick || []).join("\n"); qf.receipts.checked = S.receipts !== false;
   notifyHint();
 }
@@ -635,6 +637,7 @@ $("#set-quick").addEventListener("submit", ev => {
 });
 $("#quick-reset").addEventListener("click", () => { $("#set-quick").quick_text.value = ""; });
 $("#set-position").addEventListener("submit", ev => { ev.preventDefault(); cmd("settings", formObj(ev.target)); });
+$("#set-privacy").addEventListener("submit", ev => { ev.preventDefault(); cmd("settings", formObj(ev.target)); });
 $("#pos-pick").addEventListener("click", () => pick("Click your position", async (a, b) => {
   // saved right away (like "Set as manual position" on the map); showTab refills the form from the saved values
   const v = a.toFixed(6) + "," + b.toFixed(6);

@@ -2,6 +2,12 @@
 
 PagerTAK versions (the payload in `library/user/general/PagerTAK`). Newest first.
 
+## 2.3.3
+- **Privacy settings for TAK**: *Settings > Privacy* (Pager and web console) sets SSIDs, MAC addresses / BSSIDs and Bluetooth names to *Show*, *Partial* or *Hide* in everything sent to TAK: evil-twin and tracker alerts, the Deauth Alert payload (1.0.1) and site-survey uploads. Masked markers keep one UID per device without the MAC in it. Loot logs keep full detail; drone Remote ID is never masked. Default *Show*, so nothing changes until you pick otherwise.
+- **GPS from the Pager API**: on firmware 2.x, PagerTAK reads the Pager's local API, so Status and position reports say *3D fix*, *2D fix*, *no fix* or *GPS not connected*. Older firmware still uses `GPS_GET`.
+- **Shared screen lock**: the map and QR screen take the same display lock as Glytch's NetRider, so only one screen app runs at a time and PagerTAK says when another app has the screen. A watchdog gives the screen back to the Pager UI if PagerTAK is stopped while the map is up. The firmware version (2.0.0+) is checked first.
+- **Battery**: falls back to the Pager's fuel gauge when `BATTERY_PERCENT` fails, and leaves battery out of the position report when it is unknown, instead of reporting 0%. Status shows the battery level.
+
 ## 2.3.2
 - **Web console on every address by default**: the console now listens on all interfaces, so it opens by the Pager's host name, its IP on your network or the USB address. *Listen on* can still narrow it to USB + VPN or USB only.
 - **Listen on in the web console**: *Settings > Web console access* sets it from the browser and lists the addresses the console answers on. Saving restarts the console.

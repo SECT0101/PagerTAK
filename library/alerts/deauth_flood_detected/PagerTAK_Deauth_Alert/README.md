@@ -1,7 +1,7 @@
 # PagerTAK Deauth Alert – Hak5 WiFi Pineapple Pager Alert Payload
 
 **Author:** SECT0101
-**Version:** 1.0
+**Version:** 1.0.1
 **Alert type:** `deauth_flood_detected`
 **Requires:** [PagerTAK](../../../user/general/PagerTAK) configured at least once
 
@@ -11,7 +11,7 @@
 
 When the Pager detects a **deauthentication / disassociation flood**, this alert payload pushes it to your **TAK Server**:
 
-- a **map marker** at the Pager's position, red and *suspect* by default, named `DEAUTH <last 3 octets of source MAC>` (full MAC in remarks), with the source, AP/BSSID and client MACs in its remarks
+- a **map marker** at the Pager's position, red and *suspect* by default, named `DEAUTH <last 3 octets of source MAC>` (full MAC in remarks), with the source, AP/BSSID and client MACs in its remarks. PagerTAK's *Settings > Privacy* can mask the MACs (see below)
 - a **GeoChat** message to *All Chat Rooms*:
   `ALERT: deauth flood near PAGER-1 - src de:ad:be:ef:00:01, AP aa:bb:cc:00:11:22`
 
@@ -39,6 +39,8 @@ The marker marks **where the Pager heard the attack**, not where the attacker is
 | `MARKER_TYPE` | `a-s-G` | `a-s-G` suspect, `a-h-G` hostile, `a-u-G` unknown |
 | `MARKER_STALE_MIN` | `30` | minutes on the map |
 | `PAGERTAK_DIR` | `/root/payloads/user/general/PagerTAK` | where PagerTAK's `certs/` live |
+
+**MAC privacy** follows PagerTAK's *Settings > Privacy > MAC/BSSID*: *Show* (default) sends the MACs as above, *Partial* keeps the vendor half (`DE:AD:BE:xx:xx:xx`), *Hide* sends `[MAC withheld]`. When masked, the marker is named `DEAUTH` plus a short code made from a per-Pager secret, so repeat floods still update one marker without the MAC in its UID. The alert log in `/root/loot/PagerTAK/alerts.log` always keeps the full MACs.
 
 ## 🧰 Installation
 
